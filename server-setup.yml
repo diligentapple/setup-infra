@@ -3,25 +3,48 @@
   hosts: all
   become: true
 
-  # Import your encrypted key
   vars_files:
     - secrets.yml
 
   vars:
     target_user: "{{ ansible_user_id }}"
+    master_key_path: "ansible_master.pub"
+    deploy_mesh_ssh_config: false
     arch_mapping:
       x86_64: amd64
       aarch64: arm64
 
   tasks:
     # ----------------------------------------------------------------
-    # 1. PREP & CHECKS
+    # 1. USER BASELINE
     # ----------------------------------------------------------------
-    # We check if Docker exists first.
+    - name: Ensure user 'ubuntu' exists
+      user:
+        name: ubuntu
+        shell: /bin/bash
+        groups: sudo,docker
+        append: yes
+        state: present
+
+    - name: Authorize master key for 'ubuntu'
+      authorized_key:
+        user: ubuntu
+        state: present
+        key: "{{ lookup('file', master_key_path) }}"
+
+    - name: Create sudoers file for ubuntu
+      copy:
+        content: 'ubuntu ALL=(ALL) NOPASSWD:ALL'
+        dest: /etc/sudoers.d/ubuntu
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    # ----------------------------------------------------------------
+    # 2. PREP & CHECKS
+    # ----------------------------------------------------------------
     - name: Check if Docker is already installed
       command: docker --version
       register: docker_check
-      ignore_errors: yes
       changed_when: false
       failed_when: false
 
@@ -37,7 +60,7 @@
         state: present
 
     # ----------------------------------------------------------------
-    # 2. SWAP SETUP (Safe)
+    # 3. SWAP SETUP
     # ----------------------------------------------------------------
     - name: Check if swap file exists
       stat:
@@ -48,18 +71,18 @@
       command: fallocate -l 2G /swapfile
       when: not swap_file_check.stat.exists
 
-    - name: Set secure permissions (600)
+    - name: Set secure permissions on swap file
       file:
         path: /swapfile
         owner: root
         group: root
         mode: '0600'
 
-    - name: Format swap file (mkswap)
+    - name: Format swap file
       command: mkswap /swapfile
       when: not swap_file_check.stat.exists
 
-    - name: Enable Swap and Persist in fstab
+    - name: Enable swap and persist in fstab
       mount:
         name: none
         src: /swapfile
@@ -70,20 +93,17 @@
         state: present
 
     # ----------------------------------------------------------------
-    # 3. DOCKER SETUP (Conditional)
+    # 4. DOCKER SETUP (Conditional)
     # ----------------------------------------------------------------
-    # ALL these tasks now have 'when: docker_check.rc != 0'
-    # This means they ONLY run if Docker was NOT found.
-
     - name: Add Docker GPG key
       apt_key:
         url: https://download.docker.com/linux/ubuntu/gpg
         state: present
       when: docker_check.rc != 0
 
-    - name: Add Docker Repository
+    - name: Add Docker repository
       apt_repository:
-        repo: "deb [arch={{ arch_mapping[ansible_architecture] }}] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        repo: "deb [arch={{ arch_mapping[ansible_architecture] | default('amd64') }}] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
         state: present
         filename: docker
       when: docker_check.rc != 0
@@ -95,22 +115,21 @@
         update_cache: yes
       when: docker_check.rc != 0
 
-    - name: Add user to Docker group
+    - name: Add target user to Docker group
       user:
         name: "{{ target_user }}"
         groups: docker
         append: yes
-      when: docker_check.rc != 0
 
     # ----------------------------------------------------------------
-    # 4. TAILSCALE SETUP
+    # 5. TAILSCALE SETUP
     # ----------------------------------------------------------------
     - name: Add Tailscale GPG key
       apt_key:
         url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg
         state: present
 
-    - name: Add Tailscale Repository
+    - name: Add Tailscale repository
       apt_repository:
         repo: "deb https://pkgs.tailscale.com/stable/ubuntu/ {{ ansible_distribution_release }} main"
         state: present
@@ -129,9 +148,10 @@
     - name: Connect Tailscale
       command: tailscale up --authkey={{ tailscale_auth_key }} --ssh
       when: tailscale_status.rc != 0
+      no_log: true
 
     # ----------------------------------------------------------------
-    # 5. FIREWALL
+    # 6. FIREWALL
     # ----------------------------------------------------------------
     - name: Allow SSH
       ufw:
@@ -143,7 +163,7 @@
         state: enabled
 
     # ----------------------------------------------------------------
-    # 6. SSH CONFIG MESH (Nodes know each other)
+    # 7. OPTIONAL SSH CONFIG MESH
     # ----------------------------------------------------------------
     - name: Ensure .ssh directory exists
       file:
@@ -153,13 +173,20 @@
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
 
-    - name: Deploy SSH Config (Mesh)
+    - name: Check whether mesh SSH template exists
+      stat:
+        path: templates/ssh_config.j2
+      register: ssh_template_check
+      delegate_to: localhost
+      become: false
+
+    - name: Deploy SSH config mesh template
       template:
         src: templates/ssh_config.j2
         dest: "/home/{{ target_user }}/.ssh/config"
         mode: '0600'
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
-
-    # Optional: If you want nodes to actually SSH into each other, 
-    # you must copy a private key to them. (Advanced step)
+      when:
+        - deploy_mesh_ssh_config | bool
+        - ssh_template_check.stat.exists
