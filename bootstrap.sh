@@ -4,7 +4,7 @@ set -e
 # --- CONFIGURATION ---
 # This points to the public key we are about to push to GitHub
 GITHUB_USER="diligentapple"
-REPO_NAME="infra-setup"
+REPO_NAME="setup-infra"
 KEY_URL="https://raw.githubusercontent.com/$GITHUB_USER/$REPO_NAME/main/ansible_master.pub"
 # ---------------------
 
