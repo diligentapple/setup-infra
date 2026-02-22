@@ -1,0 +1,34 @@
+# --- SECURITY: PRIVATE KEYS (Crucial) ---
+# Ignore all files ending in .key or .pem
+*.key
+*.pem
+
+# Ignore specific standard key names
+id_rsa
+id_ed25519
+id_ecdsa
+
+# Ignore your specific Master Key (The Private one)
+ansible_master
+
+# --- ANSIBLE ARTIFACTS ---
+# Retry files (created when playbooks fail)
+*.retry
+*.log
+
+# Temporary Ansible folders
+.ansible/
+
+# Vault Password file (if you ever create one to stop typing the password)
+.vault_pass
+.vault_password
+
+# --- OS / EDITOR JUNK ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- EXCEPTIONS (What we DO want) ---
+# We explicitly want the PUBLIC key to be committed
+!ansible_master.pub

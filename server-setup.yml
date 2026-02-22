@@ -1,0 +1,165 @@
+---
+- name: "Configure Server (Universal: x86/ARM + Swap)"
+  hosts: all
+  become: true
+
+  # Import your encrypted key
+  vars_files:
+    - secrets.yml
+
+  vars:
+    target_user: "{{ ansible_user_id }}"
+    arch_mapping:
+      x86_64: amd64
+      aarch64: arm64
+
+  tasks:
+    # ----------------------------------------------------------------
+    # 1. PREP & CHECKS
+    # ----------------------------------------------------------------
+    # We check if Docker exists first.
+    - name: Check if Docker is already installed
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+      failed_when: false
+
+    - name: Update apt cache and upgrade
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install core dependencies
+      apt:
+        name: [ca-certificates, curl, gnupg, lsb-release, git, htop, ufw, jq]
+        state: present
+
+    # ----------------------------------------------------------------
+    # 2. SWAP SETUP (Safe)
+    # ----------------------------------------------------------------
+    - name: Check if swap file exists
+      stat:
+        path: /swapfile
+      register: swap_file_check
+
+    - name: Create 2GB Swap file
+      command: fallocate -l 2G /swapfile
+      when: not swap_file_check.stat.exists
+
+    - name: Set secure permissions (600)
+      file:
+        path: /swapfile
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Format swap file (mkswap)
+      command: mkswap /swapfile
+      when: not swap_file_check.stat.exists
+
+    - name: Enable Swap and Persist in fstab
+      mount:
+        name: none
+        src: /swapfile
+        fstype: swap
+        opts: sw
+        passno: 0
+        dump: 0
+        state: present
+
+    # ----------------------------------------------------------------
+    # 3. DOCKER SETUP (Conditional)
+    # ----------------------------------------------------------------
+    # ALL these tasks now have 'when: docker_check.rc != 0'
+    # This means they ONLY run if Docker was NOT found.
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: docker_check.rc != 0
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: "deb [arch={{ arch_mapping[ansible_architecture] }}] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+      when: docker_check.rc != 0
+
+    - name: Install Docker Engine
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: yes
+      when: docker_check.rc != 0
+
+    - name: Add user to Docker group
+      user:
+        name: "{{ target_user }}"
+        groups: docker
+        append: yes
+      when: docker_check.rc != 0
+
+    # ----------------------------------------------------------------
+    # 4. TAILSCALE SETUP
+    # ----------------------------------------------------------------
+    - name: Add Tailscale GPG key
+      apt_key:
+        url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg
+        state: present
+
+    - name: Add Tailscale Repository
+      apt_repository:
+        repo: "deb https://pkgs.tailscale.com/stable/ubuntu/ {{ ansible_distribution_release }} main"
+        state: present
+
+    - name: Install Tailscale
+      apt:
+        name: tailscale
+        state: present
+
+    - name: Check Tailscale status
+      command: tailscale status
+      register: tailscale_status
+      changed_when: false
+      failed_when: false
+
+    - name: Connect Tailscale
+      command: tailscale up --authkey={{ tailscale_auth_key }} --ssh
+      when: tailscale_status.rc != 0
+
+    # ----------------------------------------------------------------
+    # 5. FIREWALL
+    # ----------------------------------------------------------------
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    # ----------------------------------------------------------------
+    # 6. SSH CONFIG MESH (Nodes know each other)
+    # ----------------------------------------------------------------
+    - name: Ensure .ssh directory exists
+      file:
+        path: "/home/{{ target_user }}/.ssh"
+        state: directory
+        mode: '0700'
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+
+    - name: Deploy SSH Config (Mesh)
+      template:
+        src: templates/ssh_config.j2
+        dest: "/home/{{ target_user }}/.ssh/config"
+        mode: '0600'
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+
+    # Optional: If you want nodes to actually SSH into each other, 
+    # you must copy a private key to them. (Advanced step)
