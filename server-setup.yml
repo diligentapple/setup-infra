@@ -9,7 +9,9 @@
   vars:
     target_user: "{{ ansible_user_id }}"
     master_key_path: "ansible_master.pub"
-    deploy_mesh_ssh_config: false
+    install_docker: true
+    install_tailscale: true
+    swap_size_gb: 2
     arch_mapping:
       x86_64: amd64
       aarch64: arm64
@@ -67,8 +69,8 @@
         path: /swapfile
       register: swap_file_check
 
-    - name: Create 2GB Swap file
-      command: fallocate -l 2G /swapfile
+    - name: Create swap file
+      command: "fallocate -l {{ swap_size_gb }}G /swapfile"
       when: not swap_file_check.stat.exists
 
     - name: Set secure permissions on swap file
@@ -99,27 +101,34 @@
       apt_key:
         url: https://download.docker.com/linux/ubuntu/gpg
         state: present
-      when: docker_check.rc != 0
+      when:
+        - install_docker | bool
+        - docker_check.rc != 0
 
     - name: Add Docker repository
       apt_repository:
         repo: "deb [arch={{ arch_mapping[ansible_architecture] | default('amd64') }}] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
         state: present
         filename: docker
-      when: docker_check.rc != 0
+      when:
+        - install_docker | bool
+        - docker_check.rc != 0
 
     - name: Install Docker Engine
       apt:
         name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
         state: present
         update_cache: yes
-      when: docker_check.rc != 0
+      when:
+        - install_docker | bool
+        - docker_check.rc != 0
 
     - name: Add target user to Docker group
       user:
         name: "{{ target_user }}"
         groups: docker
         append: yes
+      when: install_docker | bool
 
     # ----------------------------------------------------------------
     # 5. TAILSCALE SETUP
@@ -128,26 +137,32 @@
       apt_key:
         url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg
         state: present
+      when: install_tailscale | bool
 
     - name: Add Tailscale repository
       apt_repository:
         repo: "deb https://pkgs.tailscale.com/stable/ubuntu/ {{ ansible_distribution_release }} main"
         state: present
+      when: install_tailscale | bool
 
     - name: Install Tailscale
       apt:
         name: tailscale
         state: present
+      when: install_tailscale | bool
 
     - name: Check Tailscale status
       command: tailscale status
       register: tailscale_status
       changed_when: false
       failed_when: false
+      when: install_tailscale | bool
 
     - name: Connect Tailscale
       command: tailscale up --authkey={{ tailscale_auth_key }} --ssh
-      when: tailscale_status.rc != 0
+      when:
+        - install_tailscale | bool
+        - tailscale_status.rc != 0
       no_log: true
 
     # ----------------------------------------------------------------
@@ -162,31 +177,3 @@
       ufw:
         state: enabled
 
-    # ----------------------------------------------------------------
-    # 7. OPTIONAL SSH CONFIG MESH
-    # ----------------------------------------------------------------
-    - name: Ensure .ssh directory exists
-      file:
-        path: "/home/{{ target_user }}/.ssh"
-        state: directory
-        mode: '0700'
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-
-    - name: Check whether mesh SSH template exists
-      stat:
-        path: templates/ssh_config.j2
-      register: ssh_template_check
-      delegate_to: localhost
-      become: false
-
-    - name: Deploy SSH config mesh template
-      template:
-        src: templates/ssh_config.j2
-        dest: "/home/{{ target_user }}/.ssh/config"
-        mode: '0600'
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-      when:
-        - deploy_mesh_ssh_config | bool
-        - ssh_template_check.stat.exists

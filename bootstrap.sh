@@ -13,9 +13,9 @@ install_base_deps() {
   echo ">>> Installing base dependencies..."
   if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -qq
-    sudo apt-get install -y -qq python3 python3-pip git curl
+    sudo apt-get install -y -qq python3 python3-pip git curl nano
   elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y python3 python3-pip git curl
+    sudo dnf install -y python3 python3-pip git curl nano
   else
     echo "No supported package manager found (apt-get/dnf)." >&2
     exit 1
@@ -73,6 +73,29 @@ run_full_server_setup() {
   echo ">>> Preparing full server setup from Ansible playbook..."
   install_ansible
 
+  read -rp ">>> Install Docker? [Y/n]: " INSTALL_DOCKER_INPUT
+  read -rp ">>> Install Tailscale? [Y/n]: " INSTALL_TAILSCALE_INPUT
+  read -rp ">>> Swap size in GB [default: 2]: " SWAP_SIZE_INPUT
+
+  INSTALL_DOCKER_INPUT=${INSTALL_DOCKER_INPUT:-Y}
+  INSTALL_TAILSCALE_INPUT=${INSTALL_TAILSCALE_INPUT:-Y}
+  SWAP_SIZE_INPUT=${SWAP_SIZE_INPUT:-2}
+
+  case "$INSTALL_DOCKER_INPUT" in
+    [Nn]*) INSTALL_DOCKER=false ;;
+    *) INSTALL_DOCKER=true ;;
+  esac
+
+  case "$INSTALL_TAILSCALE_INPUT" in
+    [Nn]*) INSTALL_TAILSCALE=false ;;
+    *) INSTALL_TAILSCALE=true ;;
+  esac
+
+  if ! [[ "$SWAP_SIZE_INPUT" =~ ^[0-9]+$ ]] || [ "$SWAP_SIZE_INPUT" -lt 1 ]; then
+    echo "Invalid swap size '$SWAP_SIZE_INPUT'. Must be a positive integer (GB)." >&2
+    exit 1
+  fi
+
   rm -rf "$CLONE_DIR"
   git clone "$REPO_URL" "$CLONE_DIR"
   cd "$CLONE_DIR"
@@ -94,7 +117,7 @@ run_full_server_setup() {
     -c local \
     server-setup.yml \
     --vault-password-file "$vault_file" \
-    --extra-vars "target_user=ubuntu"
+    --extra-vars "target_user=ubuntu install_docker=${INSTALL_DOCKER} install_tailscale=${INSTALL_TAILSCALE} swap_size_gb=${SWAP_SIZE_INPUT}"
 
   echo "✅ Full server setup complete."
 }
