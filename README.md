@@ -4,24 +4,25 @@ This repository bootstraps and configures Linux servers with a single one-liner 
 
 ## Files
 
-- `bootstrap.sh`  
+- `bootstrap.sh`
   Unified entrypoint script:
   - `full` mode (default): first-touch bootstrap + runs full `server-setup.yml` locally on the VM.
   - `bootstrap-only` mode: only creates `ubuntu` user + SSH key access and basic dependencies (`python3`, `python3-pip`, `git`, `curl`, `nano`).
 
-- `server-setup.yml`  
+- `server-setup.yml`
   Main playbook for:
   - `ubuntu` user baseline (user, sudoers, authorized key)
   - package updates and core dependencies
   - swap file setup (configurable size, default 2G)
   - Docker installation (optional)
   - Tailscale installation and join (optional)
+  - Extra packages (configurable)
   - UFW hardening
 
-- `secrets.yml`  
+- `secrets.yml`
   Encrypted vault values (for example `tailscale_auth_key`).
 
-- `ansible_master.pub`  
+- `ansible_master.pub`
   Universal public key distributed to managed hosts.
 
 ## Usage
@@ -38,6 +39,34 @@ curl -fsSL https://raw.githubusercontent.com/diligentapple/setup-infra/main/boot
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/diligentapple/setup-infra/main/bootstrap.sh | bash -s -- bootstrap-only
+```
+
+### 3) Install extra packages via the one-liner
+
+Pass the `EXTRA_PACKAGES` environment variable (space-separated) to install additional
+apt packages alongside the defaults:
+
+```bash
+EXTRA_PACKAGES="nginx redis-server postgresql" curl -fsSL https://raw.githubusercontent.com/diligentapple/setup-infra/main/bootstrap.sh | bash
+```
+
+If you don't set the env var, the script will prompt you interactively during setup.
+
+## Adding packages permanently
+
+To make extra packages part of every deployment, edit the top of `bootstrap.sh`:
+
+```bash
+EXTRA_PACKAGES="${EXTRA_PACKAGES:-nginx redis-server}"
+```
+
+Or add them directly to the `extra_packages` list in `server-setup.yml`:
+
+```yaml
+vars:
+  extra_packages:
+    - nginx
+    - redis-server
 ```
 
 ## Step-by-step after running the one-liner
@@ -127,6 +156,7 @@ curl -fsSL https://raw.githubusercontent.com/diligentapple/setup-infra/main/boot
 
 - Vault password handling uses a secure temp file and cleanup trap.
 - `tailscale up --authkey=...` task is marked `no_log: true`.
+- GPG keys are stored in `/etc/apt/keyrings/` using `signed-by` (modern approach).
 
 ## Validation
 

@@ -1,13 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- CONFIGURATION ---
+# ===================================================================
+# CONFIGURATION — edit these before deploying, or override via env vars
+# ===================================================================
 GITHUB_USER="diligentapple"
 REPO_NAME="setup-infra"
 KEY_URL="https://raw.githubusercontent.com/$GITHUB_USER/$REPO_NAME/main/ansible_master.pub"
 REPO_URL="https://github.com/$GITHUB_USER/$REPO_NAME.git"
 CLONE_DIR="/tmp/ansible-setup"
-# ---------------------
+
+# Extra packages to install via the Ansible playbook (space-separated).
+# Override with the EXTRA_PACKAGES env var, e.g.:
+#   EXTRA_PACKAGES="nginx redis-server" curl -fsSL ... | bash
+EXTRA_PACKAGES="${EXTRA_PACKAGES:-}"
+# ===================================================================
 
 install_base_deps() {
   echo ">>> Installing base dependencies..."
@@ -70,12 +77,25 @@ bootstrap_remote() {
 }
 
 run_full_server_setup() {
+  # The Ansible playbook uses apt modules — require a Debian-based distro.
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "ERROR: Full server setup requires a Debian/Ubuntu system (apt-get not found)." >&2
+    exit 1
+  fi
+
   echo ">>> Preparing full server setup from Ansible playbook..."
   install_ansible
 
-  read -rp ">>> Install Docker? [Y/n]: " INSTALL_DOCKER_INPUT
-  read -rp ">>> Install Tailscale? [Y/n]: " INSTALL_TAILSCALE_INPUT
-  read -rp ">>> Swap size in GB [default: 2]: " SWAP_SIZE_INPUT
+  # When piped through curl, stdin is the script itself.
+  # Redirect interactive reads from /dev/tty so prompts work.
+  read -rp ">>> Install Docker? [Y/n]: " INSTALL_DOCKER_INPUT < /dev/tty
+  read -rp ">>> Install Tailscale? [Y/n]: " INSTALL_TAILSCALE_INPUT < /dev/tty
+  read -rp ">>> Swap size in GB [default: 2]: " SWAP_SIZE_INPUT < /dev/tty
+
+  if [ -z "$EXTRA_PACKAGES" ]; then
+    read -rp ">>> Extra packages to install (space-separated, or press Enter to skip): " EXTRA_PACKAGES_INPUT < /dev/tty
+    EXTRA_PACKAGES="${EXTRA_PACKAGES_INPUT:-}"
+  fi
 
   INSTALL_DOCKER_INPUT=${INSTALL_DOCKER_INPUT:-Y}
   INSTALL_TAILSCALE_INPUT=${INSTALL_TAILSCALE_INPUT:-Y}
@@ -96,14 +116,20 @@ run_full_server_setup() {
     exit 1
   fi
 
+  # Convert space-separated package string into a JSON list for Ansible.
+  EXTRA_PKGS_JSON="[]"
+  if [ -n "$EXTRA_PACKAGES" ]; then
+    EXTRA_PKGS_JSON=$(printf '%s' "$EXTRA_PACKAGES" | tr -s ' ' '\n' | jq -R . | jq -s .)
+  fi
+
   rm -rf "$CLONE_DIR"
   git clone "$REPO_URL" "$CLONE_DIR"
   cd "$CLONE_DIR"
 
   echo "----------------------------------------------------"
-  echo "🔐 Enter your Ansible Vault Password to unlock secrets:"
+  echo "Enter your Ansible Vault Password to unlock secrets:"
   echo "----------------------------------------------------"
-  read -rs VAULT_PASS
+  read -rs VAULT_PASS < /dev/tty
 
   local vault_file
   vault_file=$(mktemp)
@@ -111,15 +137,16 @@ run_full_server_setup() {
   trap 'rm -f "$vault_file"; rm -rf "$CLONE_DIR"' EXIT
   printf '%s' "$VAULT_PASS" > "$vault_file"
 
-  echo "⚙️  Running full server-setup.yml on localhost..."
+  echo ""
+  echo "Running full server-setup.yml on localhost..."
   sudo ansible-playbook \
     -i "localhost," \
     -c local \
     server-setup.yml \
     --vault-password-file "$vault_file" \
-    --extra-vars "target_user=ubuntu install_docker=${INSTALL_DOCKER} install_tailscale=${INSTALL_TAILSCALE} swap_size_gb=${SWAP_SIZE_INPUT}"
+    --extra-vars "{\"target_user\":\"ubuntu\",\"install_docker\":${INSTALL_DOCKER},\"install_tailscale\":${INSTALL_TAILSCALE},\"swap_size_gb\":${SWAP_SIZE_INPUT},\"extra_packages\":${EXTRA_PKGS_JSON}}"
 
-  echo "✅ Full server setup complete."
+  echo "Full server setup complete."
 }
 
 MODE="${1:-full}"

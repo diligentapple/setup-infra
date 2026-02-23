@@ -12,6 +12,7 @@
     install_docker: true
     install_tailscale: true
     swap_size_gb: 2
+    extra_packages: []
     arch_mapping:
       x86_64: amd64
       aarch64: arm64
@@ -24,7 +25,7 @@
       user:
         name: ubuntu
         shell: /bin/bash
-        groups: sudo,docker
+        groups: sudo
         append: yes
         state: present
 
@@ -58,8 +59,22 @@
 
     - name: Install core dependencies
       apt:
-        name: [ca-certificates, curl, gnupg, lsb-release, git, htop, ufw, jq]
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - git
+          - htop
+          - ufw
+          - jq
         state: present
+
+    - name: Install extra packages
+      apt:
+        name: "{{ extra_packages }}"
+        state: present
+      when: extra_packages | length > 0
 
     # ----------------------------------------------------------------
     # 3. SWAP SETUP
@@ -84,7 +99,11 @@
       command: mkswap /swapfile
       when: not swap_file_check.stat.exists
 
-    - name: Enable swap and persist in fstab
+    - name: Enable swap
+      command: swapon /swapfile
+      when: not swap_file_check.stat.exists
+
+    - name: Persist swap in fstab
       mount:
         name: none
         src: /swapfile
@@ -97,17 +116,26 @@
     # ----------------------------------------------------------------
     # 4. DOCKER SETUP (Conditional)
     # ----------------------------------------------------------------
-    - name: Add Docker GPG key
-      apt_key:
+    - name: Ensure /etc/apt/keyrings directory exists
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      when:
+        - (install_docker | bool and docker_check.rc != 0) or install_tailscale | bool
+
+    - name: Download Docker GPG key
+      get_url:
         url: https://download.docker.com/linux/ubuntu/gpg
-        state: present
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
       when:
         - install_docker | bool
         - docker_check.rc != 0
 
     - name: Add Docker repository
       apt_repository:
-        repo: "deb [arch={{ arch_mapping[ansible_architecture] | default('amd64') }}] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        repo: "deb [arch={{ arch_mapping[ansible_architecture] | default('amd64') }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
         state: present
         filename: docker
       when:
@@ -116,7 +144,11 @@
 
     - name: Install Docker Engine
       apt:
-        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
         state: present
         update_cache: yes
       when:
@@ -133,22 +165,32 @@
     # ----------------------------------------------------------------
     # 5. TAILSCALE SETUP
     # ----------------------------------------------------------------
-    - name: Add Tailscale GPG key
-      apt_key:
-        url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg
-        state: present
+    - name: Download Tailscale GPG key
+      get_url:
+        url: "https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_distribution_release }}.noarmor.gpg"
+        dest: /etc/apt/keyrings/tailscale.gpg
+        mode: '0644'
       when: install_tailscale | bool
 
     - name: Add Tailscale repository
       apt_repository:
-        repo: "deb https://pkgs.tailscale.com/stable/ubuntu/ {{ ansible_distribution_release }} main"
+        repo: "deb [signed-by=/etc/apt/keyrings/tailscale.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ansible_distribution_release }} main"
         state: present
+        filename: tailscale
       when: install_tailscale | bool
 
     - name: Install Tailscale
       apt:
         name: tailscale
         state: present
+        update_cache: yes
+      when: install_tailscale | bool
+
+    - name: Ensure tailscaled service is enabled and running
+      systemd:
+        name: tailscaled
+        state: started
+        enabled: yes
       when: install_tailscale | bool
 
     - name: Check Tailscale status
@@ -159,7 +201,12 @@
       when: install_tailscale | bool
 
     - name: Connect Tailscale
-      command: tailscale up --authkey={{ tailscale_auth_key }} --ssh
+      command:
+        argv:
+          - tailscale
+          - up
+          - "--authkey={{ tailscale_auth_key }}"
+          - --ssh
       when:
         - install_tailscale | bool
         - tailscale_status.rc != 0
@@ -176,4 +223,3 @@
     - name: Enable UFW
       ufw:
         state: enabled
-
