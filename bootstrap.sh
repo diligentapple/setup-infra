@@ -131,7 +131,6 @@ run_full_server_setup() {
   echo "----------------------------------------------------"
   read -rs VAULT_PASS < /dev/tty
 
-  local vault_file
   vault_file=$(mktemp)
   chmod 600 "$vault_file"
   trap 'rm -f "$vault_file"; rm -rf "$CLONE_DIR"' EXIT
