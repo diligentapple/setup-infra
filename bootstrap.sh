@@ -34,10 +34,19 @@ wait_for_apt() {
   done
 }
 
+recover_dpkg() {
+  if command -v apt-get >/dev/null 2>&1; then
+    wait_for_apt
+    echo ">>> Recovering dpkg from any previously interrupted installs..."
+    sudo dpkg --configure -a
+  fi
+}
+
 install_base_deps() {
   echo ">>> Installing base dependencies..."
   if command -v apt-get >/dev/null 2>&1; then
     wait_for_apt
+    recover_dpkg
     sudo apt-get update -qq
     sudo apt-get install -y -qq python3 python3-pip git curl nano
   elif command -v dnf >/dev/null 2>&1; then
@@ -49,13 +58,14 @@ install_base_deps() {
 }
 
 install_ansible() {
-  if command -v ansible-playbook >/dev/null 2>&1; then
+  if ansible-playbook --version >/dev/null 2>&1; then
     return
   fi
 
   echo ">>> Installing Ansible..."
   if command -v apt-get >/dev/null 2>&1; then
     wait_for_apt
+    recover_dpkg
     sudo apt-get update -qq
     sudo apt-get install -y -qq ansible
   elif command -v dnf >/dev/null 2>&1; then
