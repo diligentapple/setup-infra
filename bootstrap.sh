@@ -16,9 +16,28 @@ CLONE_DIR="/tmp/ansible-setup"
 EXTRA_PACKAGES="${EXTRA_PACKAGES:-}"
 # ===================================================================
 
+wait_for_apt() {
+  local max_wait=120
+  local waited=0
+  while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 \
+     || sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+    if [ "$waited" -eq 0 ]; then
+      echo ">>> Waiting for apt lock (cloud-init / unattended-upgrades)..."
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    if [ "$waited" -ge "$max_wait" ]; then
+      echo "ERROR: apt lock still held after ${max_wait}s. Check running processes." >&2
+      exit 1
+    fi
+  done
+}
+
 install_base_deps() {
   echo ">>> Installing base dependencies..."
   if command -v apt-get >/dev/null 2>&1; then
+    wait_for_apt
     sudo apt-get update -qq
     sudo apt-get install -y -qq python3 python3-pip git curl nano
   elif command -v dnf >/dev/null 2>&1; then
@@ -36,6 +55,7 @@ install_ansible() {
 
   echo ">>> Installing Ansible..."
   if command -v apt-get >/dev/null 2>&1; then
+    wait_for_apt
     sudo apt-get update -qq
     sudo apt-get install -y -qq ansible
   elif command -v dnf >/dev/null 2>&1; then
