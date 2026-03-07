@@ -36,6 +36,7 @@ wait_for_apt() {
 
 recover_dpkg() {
   if command -v apt-get >/dev/null 2>&1; then
+    wait_for_apt
     echo ">>> Recovering dpkg from any previously interrupted installs..."
     sudo dpkg --configure -a
   fi
